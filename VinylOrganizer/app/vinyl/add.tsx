@@ -35,6 +35,7 @@ export default function AddVinylScreen() {
                 submitLabel='Add to Collection'
                 onSubmit={async (data) => {
                     await addVinyl(data);
+
                     if (fromScan) {
                         router.dismissAll();
                     } else {

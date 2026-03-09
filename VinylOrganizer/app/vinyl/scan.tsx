@@ -21,20 +21,25 @@ import { Colors } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useOcrRecognition } from "@/hooks/use-ocr-recognition";
 import { AlbumSearchResult, searchByBarcode } from "@/services/discogs";
+import {
+    recognizeByImage,
+    isConfidentMatch,
+    RecognitionSource,
+} from "@/services/recognition";
 
-type RecognitionSource = "barcode" | "ocr";
+type ScanSource = RecognitionSource | "ocr";
 
 type ScanState =
     | { kind: "idle" }
-    | { kind: "searching"; source: RecognitionSource; query: string }
-    | { kind: "found"; source: RecognitionSource; results: AlbumSearchResult[] }
-    | { kind: "not-found"; source: RecognitionSource; query: string };
+    | { kind: "searching"; source: ScanSource; query: string }
+    | { kind: "found"; source: ScanSource; results: AlbumSearchResult[] }
+    | { kind: "not-found"; source: ScanSource; query: string };
 
 export default function ScanScreen() {
     const [permission, requestPermission] = useCameraPermissions();
     const [scanState, setScanState] = useState<ScanState>({ kind: "idle" });
     const [enableTorch, setEnableTorch] = useState(false);
-    const [ocrEnabled, setOcrEnabled] = useState(true);
+    const [ocrEnabled, setOcrEnabled] = useState(false);
     const cameraRef = useRef<CameraView>(null);
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -139,13 +144,44 @@ export default function ScanScreen() {
 
     const handleTakePhoto = async () => {
         if (!cameraRef.current) return;
+
         const photo = await cameraRef.current.takePictureAsync({
             quality: 0.8,
         });
-        if (photo) {
-            router.push({
-                pathname: "/vinyl/add",
-                params: { coverImageUri: photo.uri },
+        if (!photo) return;
+
+        dismissOcrResults();
+        setScanState({
+            kind: "searching",
+            source: "clip",
+            query: "Analyzing cover...",
+        });
+
+        try {
+            const clipResult = await recognizeByImage(photo.uri);
+
+            if (clipResult.results.length > 0) {
+                setScanState({
+                    kind: "found",
+                    source: isConfidentMatch(clipResult) ? "clip" : "ocr",
+                    results: clipResult.results,
+                });
+                return;
+            }
+
+            setScanState({
+                kind: "not-found",
+                source: "clip",
+                query: clipResult.ocrText
+                    ? `No match for "${clipResult.ocrText}"`
+                    : "No readable text on cover. Try scanning a barcode.",
+            });
+        } catch (backendError) {
+            console.warn("[scan] Backend error:", backendError);
+            setScanState({
+                kind: "not-found",
+                source: "clip",
+                query: "Backend unreachable. Try scanning a barcode.",
             });
         }
     };
@@ -243,7 +279,7 @@ export default function ScanScreen() {
                 </View>
             )}
 
-            {/* Searching overlay (barcode) */}
+            {/* Searching overlay (barcode or CLIP) */}
             {scanState.kind === "searching" && (
                 <View
                     style={[
@@ -252,12 +288,14 @@ export default function ScanScreen() {
                     ]}>
                     <ActivityIndicator size='large' color={colors.tint} />
                     <ThemedText style={styles.overlayText}>
-                        Looking up barcode {scanState.query}...
+                        {scanState.source === "clip"
+                            ? "Analyzing cover..."
+                            : `Looking up barcode ${scanState.query}...`}
                     </ThemedText>
                 </View>
             )}
 
-            {/* Found overlay (barcode) */}
+            {/* Found overlay (barcode or CLIP) */}
             {scanState.kind === "found" && (
                 <View
                     style={[
@@ -265,7 +303,9 @@ export default function ScanScreen() {
                         { backgroundColor: colors.card + "F0" },
                     ]}>
                     <ThemedText style={styles.overlayTitle}>
-                        Found on Discogs
+                        {scanState.source === "clip"
+                            ? "Visual Match"
+                            : "Found on Discogs"}
                     </ThemedText>
                     {scanState.results.slice(0, 3).map((result) => (
                         <Pressable
@@ -408,7 +448,9 @@ export default function ScanScreen() {
                         No vinyl found
                     </ThemedText>
                     <ThemedText style={styles.overlayText}>
-                        Barcode {scanState.query} not found on Discogs
+                        {scanState.source === "barcode"
+                            ? `Barcode ${scanState.query} not found on Discogs`
+                            : scanState.query}
                     </ThemedText>
                     <View style={styles.overlayButtons}>
                         <Pressable
@@ -450,7 +492,7 @@ export default function ScanScreen() {
                         </View>
                     </Pressable>
                     <ThemedText style={styles.shutterLabel}>
-                        Take cover photo
+                        Identify album
                     </ThemedText>
                 </View>
             )}
